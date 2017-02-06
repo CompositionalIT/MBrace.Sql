@@ -433,8 +433,6 @@ module StdLib =
         let RetrieveExtractorByName name =
             { new IExtractor }
 
-        let HeaderBasedCsvExtractor
-
     module Writers =
         open System.IO
         open Sql.Ast
@@ -447,40 +445,6 @@ module StdLib =
 
         let Char i =
             (char i)
-
-module CloudFlow =
-    open MBrace.Core.Internals
-    open MBrace.Flow
-    open System.IO
-    open MBrace.Core
-    open System.Collections.Generic
-    open System.Threading
-
-    let private cloudFlowStaticId = mkUUID ()
-
-    let toCloudFilesWithSerializer (serializer:'a -> byte[]) (cloudStore:ICloudFileStore) (dirPath:string) (flow:CloudFlow<'a>) =
-        let collectorf (cloudCt : ICloudCancellationToken) =
-            local {
-                let cts = CancellationTokenSource.CreateLinkedTokenSource(cloudCt.LocalToken)
-                let results = new List<string * BinaryWriter>()
-                cloudStore.CreateDirectory(dirPath) |> Async.RunSync
-                return
-                    { new Collector<string, CloudFileInfo[]> with
-                        member self.DegreeOfParallelism = flow.DegreeOfParallelism
-                        member self.Iterator() =
-                            let path = cloudStore.Combine(dirPath, sprintf "Part-%s-%s.txt" cloudFlowStaticId (mkUUID ()))
-                            let stream = cloudStore.BeginWrite(path) |> Async.RunSync
-                            let writer = new BinaryWriter(stream)
-                            results.Add((path, writer))
-                            {   Func = (fun line -> writer.WriteLine(line));
-                                Cts = cts }
-                        member self.Result =
-                            results |> Seq.iter (fun (_,t) -> t.Dispose())
-                            results |> Seq.map (fun (path, _) -> new CloudFileInfo(cloudStore, path)) |> Seq.toArray
-                }
-            }
-        
-        ()
 
 module Transpiler =
     module Str = String
@@ -658,6 +622,8 @@ module Transpiler =
                 return invalidOp "No file or directory was found matching the supplied path"
         }
 
+
+[<AutoOpen>]
 module CloudClientExtensions =
     open MBrace.Core
     open MBrace.Runtime
@@ -668,27 +634,21 @@ module CloudClientExtensions =
     type MBrace.Runtime.MBraceClient with
         member this.ExecuteSql(sql:string) =
             let res = Sql.Parser.parse sql
-            let clo = TranspileSqlAstToCloudFlow res
+            let clo =
+                match res with
+                | QueryEx q -> TranspileSqlAstToCloudFlow q
+                | _ -> failwith "Unsupported query type used"
             this.Run(clo)
 
 module Program =
     open MBrace.Flow
+    open MBrace.Runtime
 
     [<EntryPoint>]
     let main argv = 
         let cf = CloudFlow.OfArray([| "Header1, Header2, Header3"; "0.5, Test Name, 0.6" |])
-        let res = Sql.Parser.parse "SELECT UPPER(name) FROM #res1 WHERE name = 'test'"
-        printfn "%A" res
+        let mbraceClient = Unchecked.defaultof<MBraceClient>
+        let output = mbraceClient.ExecuteSql("")
+        printfn "%A" output
         stdin.ReadLine () |> ignore
         0 // return an integer exit code
-
-
-"CREATE TABLE User Name ..."
-
-"SELECT Name, Age FROM '/file/testfile.txt' USING EXTRACTOR Csv WHERE FriendCount > 50 INTO #res2"
-
-"SELECT User.Name, User.Age, Location.LatLng FROM #res2 AS User JOIN #location AS Location ON User.Name = Location.Name INTO '/outputs'"
-
-"DROP TABLE #res2"
-
-"DROP TABLE #location" 
