@@ -456,7 +456,8 @@ module Transpiler =
     open System.Text.RegularExpressions
     open System
 
-    (*type SqlType =
+    [<RequireQualifiedAccessAttribute>]
+    type SqlType =
         | Bool of bool
         | String of string
         | Integer of int
@@ -464,15 +465,62 @@ module Transpiler =
         | DateTime of DateTime
         | Binary of byte[]
         | Char of char
-        | Money of decimal*)
+        | Money of decimal
+        | Null
+        member this.InnerValue =
+            match this with
+            | String v -> box v
+            | Float v -> box v
+            | Integer v -> box v
+            | Bool v -> box v
+            | DateTime dt -> box dt
+            | Binary bin -> box bin
+            | Char c -> box c
+            | Money m -> box m
+            | Null -> null
+        static member (~-) v =
+            match v with
+            | Float v -> Float (-v)
+            | Integer v -> Integer(-v)
+            | Money m -> Money(-m)
+            | _ -> invalidOp "The type does not support the - operator"
 
-    let rec evaluateTerm (currentRow:Map<string, ValueEx>) (term:TermEx) =
+        static member (+) (left, right) =
+            match left, right with
+            | Float f1, Float f2 -> Float(f1 + f2)
+            | Integer i1, Integer i2 -> Integer(i1 + i2)
+            | _, _ -> sprintf "Unable to perform op (+) on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
+
+        static member (-) (left, right) =
+            match left, right with
+            | Integer i1, Integer i2 -> Integer(i1 - i2)
+            | Float f1, Float f2 -> Float(f1 - f2)
+            | _, _ -> sprintf "Unable to perform op (-) on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
+
+        static member (/) (left, right) =
+            match left, right with
+            | Integer i1, Integer i2 -> Integer(i1 / i2)
+            | Float f1, Float f2 -> Float(f1 / f2)
+            | _, _ -> sprintf "Unable to perform op (/) on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
+
+        static member (*) (left, right) =
+            match left, right with
+            | Integer i1, Integer i2 -> Integer(i1 * i2)
+            | Float f1, Float f2 -> Float(f1 * f2)
+            | _ -> sprintf "Unable to perform op (*) on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
+
+        static member (%) (left, right) =
+            match left, right with
+            | Integer i1, Integer i2 -> Integer(i1 % i2)
+            | _ -> sprintf "Unable to perform op (%%) on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
+
+    let rec evaluateTerm (currentRow:Map<string, SqlType>) (term:TermEx) : SqlType =
         let evaluateTerm = evaluateTerm currentRow
         match term with
         | BinEx(BinOp.Eq, left, UnEx(Like, right)) ->
             let left = left |> evaluateTerm |> string
             let right = right |> evaluateTerm |> string
-            Bool (Regex.IsMatch(left, right))
+            SqlType.Bool (Regex.IsMatch(left, right))
         | BinEx (op, left, right) ->
             let left = evaluateTerm left
             let right = evaluateTerm right
@@ -480,32 +528,38 @@ module Transpiler =
             | BinOp.Add -> left + right
             | BinOp.Mul -> left * right
             | BinOp.Div -> left / right
-            | BinOp.Eq -> Bool(left = right)
-            | BinOp.Gt -> Bool (left > right)
-            | BinOp.Gte -> Bool (left >= right)
-            | BinOp.Lt -> Bool (left < right)
-            | BinOp.Lte -> Bool (left <= right)
+            | BinOp.Eq -> SqlType.Bool(left = right)
+            | BinOp.Gt -> SqlType.Bool (left > right)
+            | BinOp.Gte -> SqlType.Bool (left >= right)
+            | BinOp.Lt -> SqlType.Bool (left < right)
+            | BinOp.Lte -> SqlType.Bool (left <= right)
             | BinOp.Mod -> left % right
             | BinOp.Sub -> left - right
         | And(left, right) ->
             let left = evaluateTerm left
             let right = evaluateTerm right
             match left, right with
-            | Bool b1, Bool b2 -> Bool(b1 && b2)
+            | SqlType.Bool b1, SqlType.Bool b2 -> SqlType.Bool(b1 && b2)
             | _, _ -> invalidOp "Can't compare different types"
         | Or(left, right) ->
             let left = evaluateTerm left
             let right = evaluateTerm right
             match left, right with
-            | Bool b1, Bool b2 -> Bool(b1 || b2)
+            | SqlType.Bool b1, SqlType.Bool b2 -> SqlType.Bool(b1 || b2)
             | _, _ -> invalidOp "Can't compare different types"
         | Not term ->
-            let (Bool(term)) = evaluateTerm term
-            Bool(not term)
+            let (SqlType.Bool(term)) = evaluateTerm term
+            SqlType.Bool(not term)
         | UnEx(Neg, term) ->
             let term = evaluateTerm term
             -term
-        | Value v -> v
+        | Value v ->
+            match v with
+            | ValueEx.Bool b -> SqlType.Bool b
+            | Float f -> SqlType.Float f
+            | Integer i -> SqlType.Integer i
+            | Null -> SqlType.Null
+            | String s -> SqlType.String s
         | Ref(elements) ->
             let elementName = elements |> Str.concat "."
             currentRow.[elementName]
@@ -515,22 +569,23 @@ module Transpiler =
             | "BOOL" -> 
                 term.InnerValue
                 |> System.Convert.ToBoolean
-                |> Bool
+                |> SqlType.Bool
             | "INT" ->
                 term.InnerValue
                 |> System.Convert.ToInt32
-                |> Integer
+                |> SqlType.Integer
             | "FLOAT" ->
                 term.InnerValue
                 |> System.Convert.ToDouble
-                |> Float
+                |> SqlType.Float
             | "VARCHAR" ->
                 term.InnerValue
                 |> string
-                |> ValueEx.String
+                |> SqlType.String
+            //TODO: Implement any other SQL types which might be needed here
             | _ -> term
         (*| Call(fnName, arguments) -> ()*)
-        | _ -> Null
+        | _ -> SqlType.Null
 
     let private buildDestination (destinationEx:DestinationEx) (cf:CloudFlow<Map<string, ValueEx>>) =
         match destinationEx with
@@ -542,6 +597,7 @@ module Transpiler =
             } :> Cloud<_>
         | Folder(string, writer) ->
             cloud {
+                //TODO: This needs to take in the writer that's provided and output the partitions of the dataset into the folder specified
                 return ()
             }
 
@@ -549,38 +605,39 @@ module Transpiler =
         match origin with
         | OriginEx.ResultSet rsName ->
             local {
-                let! d = MBrace.Core.CloudDictionary.GetById<PersistedCloudFlow<Map<string, ValueEx>>>("__MBrace.Sql.Results")
+                let! d = MBrace.Core.CloudDictionary.GetById<PersistedCloudFlow<Map<string, SqlType>>>("__MBrace.Sql.Results")
                 let! cf = d.TryFindAsync(rsName) |> Cloud.OfAsync
                 let cf =
                     cf
-                    |> Option.map (fun t -> t :> CloudFlow<Map<string, ValueEx>>)
+                    |> Option.map (fun t -> t :> CloudFlow<Map<string, SqlType>>)
                 return cf
             }
         | OriginEx.DataSource (fileName, Extractor(extractor)) ->
             local {
+                //TODO:Using the extractor we retrieve here we then use the CloudFlow.OfCloudFiles and pipe it through the extractor
                 let extractor = RetrieveExtractorByName extractor
                 let! fileExists = CloudFile.Exists(fileName)
                 let! directoryExists = CloudDirectory.Exists(fileName)
                 if fileExists then
-                    return Some(Unchecked.defaultof<CloudFlow<Map<string, ValueEx>>>)
+                    return Some(Unchecked.defaultof<CloudFlow<Map<string, SqlType>>>)
                 else if directoryExists then
-                    return Some(Unchecked.defaultof<CloudFlow<Map<string, ValueEx>>>)
+                    return Some(Unchecked.defaultof<CloudFlow<Map<string, SqlType>>>)
                 else
                     return None
             }
 
-
-    let private buildFilterQuery (filter:TermEx) (cloudFlow:CloudFlow<Map<string, ValueEx>>) =
+    let private buildFilterQuery (filter:TermEx) (cloudFlow:CloudFlow<Map<string, SqlType>>) =
+        let truth = SqlType.Bool true
         cloudFlow
         |> CloudFlow.filter (fun row ->
-            Bool(true) = evaluateTerm row filter)
+            truth = evaluateTerm row filter)
 
-    let rec private buildProjections (cloudFlow:CloudFlow<Map<string, ValueEx>>) (projections:ProjectionEx list) =
-        let applyProjectionToRow (projections:ProjectionEx list) (row:Map<string, ValueEx>) =
+    let rec private buildProjections (cloudFlow:CloudFlow<Map<string, SqlType>>) (projections:ProjectionEx list) =
+        let applyProjectionToRow (projections:ProjectionEx list) (row:Map<string, SqlType>) =
             projections
             |> List.fold (fun s t ->
-                let (Projection(term, alias)) = t
-                let (String(str)) = evaluateTerm row term
+                let (Projection(term, alias)) = t //I honestly can't remember why I did this, I think it's because a table or column reference can be computed in SQL e.g. SELECT * FROM ("Table" + "A")
+                let (SqlType.String(str)) = evaluateTerm row term
                 if str = "*" then
                     row
                 else
@@ -617,11 +674,12 @@ module Transpiler =
                 let projected =
                     buildProjections filtered sqlAst.Projection
 
+                //TODO: I'm not sure if there's any other stages that need to happen here. I think we need to do group by and having
+
                 return projected
             | None ->
                 return invalidOp "No file or directory was found matching the supplied path"
         }
-
 
 [<AutoOpen>]
 module CloudClientExtensions =
@@ -637,6 +695,8 @@ module CloudClientExtensions =
             let clo =
                 match res with
                 | QueryEx q -> TranspileSqlAstToCloudFlow q
+                //TODO: Some of the other SQL types we'll have in here are DROP and CREATE TABLE etc
+                //TODO: The output also needs changing to reflect whether we're returning a vector, scalar or non query
                 | _ -> failwith "Unsupported query type used"
             this.Run(clo)
 
@@ -649,6 +709,4 @@ module Program =
         let cf = CloudFlow.OfArray([| "Header1, Header2, Header3"; "0.5, Test Name, 0.6" |])
         let mbraceClient = Unchecked.defaultof<MBraceClient>
         let output = mbraceClient.ExecuteSql("")
-        printfn "%A" output
-        stdin.ReadLine () |> ignore
         0 // return an integer exit code
