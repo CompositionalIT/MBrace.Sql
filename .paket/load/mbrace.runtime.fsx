@@ -1,0 +1,5 @@
+#load @"fspickler.fsx" 
+#load @"fspickler.json.fsx" 
+#load @"mbrace.core.fsx" 
+#load @"vagabond.fsx" 
+#r "../../packages/MBrace.Runtime/lib/net45/MBrace.Runtime.dll" 
