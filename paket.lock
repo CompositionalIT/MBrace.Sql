@@ -1,6 +1,7 @@
 FRAMEWORK: NET45
 NUGET
   remote: https://www.nuget.org/api/v2
+    CsvHelper (2.16.3)
     FParsec (1.0.2)
     FSharp.Core (4.1.0.2)
       System.ValueTuple (>= 4.3)
@@ -22,6 +23,36 @@ NUGET
     Newtonsoft.Json (10.0.1)
     Streams (0.4.1)
     System.ValueTuple (4.3)
+    Vagabond (0.14)
+      FsPickler (>= 3.0 < 4.0)
+      Mono.Cecil (>= 0.9.6.3 < 0.9.7)
+
+GROUP Testing
+FRAMEWORK: NET45
+NUGET
+  remote: https://www.nuget.org/api/v2
+    Argu (3.7)
+    FsPickler (3.2)
+    FsPickler.Json (3.2)
+      FsPickler (3.2)
+      Newtonsoft.Json (>= 6.0.5)
+    MBrace.Core (1.4)
+    MBrace.Runtime (1.4)
+      FsPickler (>= 3.2 < 4.0)
+      FsPickler.Json (>= 3.2 < 4.0)
+      MBrace.Core (1.4)
+      Vagabond (>= 0.14 < 0.15)
+    MBrace.Thespian (1.4)
+      Argu (>= 3.0 < 4.0)
+      FsPickler (>= 3.2 < 4.0)
+      MBrace.Core (1.4)
+      MBrace.Runtime (1.4)
+      Thespian (>= 0.1.11-alpha < 0.2.0-alpha)
+      Vagabond (>= 0.14 < 0.15)
+    Mono.Cecil (0.9.6.4)
+    Newtonsoft.Json (10.0.1)
+    Thespian (0.1.12-alpha)
+      FsPickler (>= 3.0)
     Vagabond (0.14)
       FsPickler (>= 3.0 < 4.0)
       Mono.Cecil (>= 0.9.6.3 < 0.9.7)
