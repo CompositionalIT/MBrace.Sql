@@ -319,8 +319,7 @@ module Parser =
         spaces >>. t .>> spaces
 
     let fromEx =
-        keyword "FROM" >>.
-        aliasedOrigin |>> From
+        keyword "FROM" >>. aliasedOrigin |>> From
 
     let whereEx = keyword "WHERE" >>. termEx
 

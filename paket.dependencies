@@ -13,4 +13,4 @@ group Testing
 framework: net45
 source https://nuget.org/api/v2
 
-nuget MBrace.Thespian
+nuget MBrace.Azure
