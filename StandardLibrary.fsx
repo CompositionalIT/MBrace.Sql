@@ -71,13 +71,28 @@ module StdLib =
             | Integer i1, Integer i2 -> Integer(i1 % i2)
             | _ -> sprintf "Unable to perform op (%%) on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
 
+    let private truth = SqlType.Bool true
+
     let rec evaluateTerm (currentRow:Map<string, SqlType>) (term:TermEx) : SqlType =
+        //TODO: This is actually really computationally expensive and could be sped up a lot
+        //It's a hard solution but dynamic method generation would be a good fit here
+        //Supply a TermEx, collapse it and generate an IL version of the method
         let evaluateTerm = evaluateTerm currentRow
         match term with
         | BinEx(BinOp.Eq, left, UnEx(Like, right)) ->
             let (SqlType.String left) = left |> evaluateTerm
             let (SqlType.String right) = right |> evaluateTerm
             SqlType.Bool (Regex.IsMatch(left, right))
+        | BinEx(BinOp.Eq, left, Not(Value(ValueEx.Null))) ->
+            let left = evaluateTerm left
+            match left with
+            | SqlType.Null -> SqlType.Bool false
+            | _ -> SqlType.Bool true
+        | BinEx(BinOp.Eq, left, Value(ValueEx.Null)) ->
+            let left = evaluateTerm left
+            match left with
+            | SqlType.Null -> SqlType.Bool true
+            | _ -> SqlType.Bool false
         | BinEx (op, left, right) ->
             let left = evaluateTerm left
             let right = evaluateTerm right
@@ -143,7 +158,23 @@ module StdLib =
             | _ -> term
         | UnEx(Like, _) -> SqlType.Null
         | Call(fnName, arguments) -> SqlType.Null
-        | Case(defaultCase, branches, defaultValue) -> SqlType.Null
+        | Case(selector, branches, defaultValue) -> 
+            let result =
+                match selector with
+                | Some selector ->
+                    let selector = evaluateTerm selector
+                    branches
+                    |> List.tryFind (fun (v, result) ->
+                        let v = evaluateTerm v
+                        selector = v)
+                | None ->
+                    branches
+                    |> List.tryFind (fun (v, result) ->
+                        let v = evaluateTerm v
+                        v = truth)
+            match result with
+            | Some (_, result) -> evaluateTerm result
+            | None -> evaluateTerm defaultValue
         | QueryEx(query) -> SqlType.Null
 
     module Extractors =
@@ -175,19 +206,14 @@ module StdLib =
 
         type CsvExtractor(options:Map<string, string>) =
             let encoding = defaultArg (options |> Map.tryFind "encoding") "UTF-8"
-            let hasHeaders = defaultArg (options |> Map.tryFind "headers" |> Option.map System.Convert.ToBoolean) false
 
             interface IExtractor with
                 member this.Extract stream =
                     let streamReader = new System.IO.StreamReader(stream)
                     let csvReader = new CsvHelper.CsvReader(streamReader)
-                    let headers = 
-                        if hasHeaders then
-                            csvReader.ReadHeader() |> ignore
-                            csvReader.FieldHeaders
-                        else
-                            let record = csvReader.CurrentRecord
-                            [| 1 .. record.Length |] |> Array.map string
+                    let headers =
+                        csvReader.ReadHeader() |> ignore
+                        csvReader.FieldHeaders
                     let rows =
                         seq {
                             while csvReader.Read() do
@@ -204,23 +230,23 @@ module StdLib =
         type JsonLExtractor(properties:Map<string, string>) =
             interface IExtractor with
                 member this.Extract stream =
-                    use streamReader = new StreamReader(stream)
-                    [|
+                    let streamReader = new StreamReader(stream)
+                    seq {
                         while not streamReader.EndOfStream do
                             let line = streamReader.ReadLine()
                             let json = JObject.Parse(line)
                             yield collapseJson (json) |> Map.ofList
-                    |] :> _
+                     }
 
         type JsonExtractor(properties:Map<string, string>) =
             interface IExtractor with
                 member this.Extract stream =
-                    use streamReader = new StreamReader(stream)
-                    [|
+                    let streamReader = new StreamReader(stream)
+                    seq {
                         let content = streamReader.ReadToEnd()
                         let json = JObject.Parse(content)
                         yield collapseJson json |> Map.ofList
-                    |] :> _
+                    }
 
         let RetrieveExtractorByName (name:string) properties : IExtractor =
             match name.ToLower() with
