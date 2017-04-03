@@ -86,7 +86,7 @@ module Transpiler =
                         row
                     else
                         let name = defaultArg alias str
-                        s |> Map.add name row.[name]
+                        s |> Map.add name row.[str]
                 | _ ->
                     let res = evaluateTerm row term
                     let name = defaultArg alias (string res)
