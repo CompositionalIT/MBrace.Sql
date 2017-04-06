@@ -10,7 +10,7 @@ module Ast =
     module Str = String
 
     type BinOp =
-        | Gt | Lt | Gte | Lte | Eq
+        | Gt | Lt | Gte | Lte | Eq | NEq
         | Add | Mul | Div | Sub | Mod
 
         type UnOp =
@@ -102,6 +102,7 @@ module Ast =
 
     and WriterEx =
         | Writer of string
+        | NoWriter
 
     and OriginEx =
         | ResultSet of string
@@ -142,7 +143,7 @@ module Parser =
         "SELECT"; "FROM"; "WHERE"; "JOIN"; "AS"; "GROUP"; "ORDER"; "HAVING"
         "BY"; "INNER"; "OUTER"; "LEFT"; "RIGHT"; "FULL"; "CROSS"; "ON"; "ASC"; "DESC";
         "AND"; "OR"; "NOT"; "LIKE"; "ORDER BY"; "DISTINCT"; "TOP"; "CASE"; "WHEN"; "THEN";
-        "END"; "IS"; "NULL"; "TRUE"; "FALSE"; "USING"; "EXTRACTOR"; "WRITER";
+        "END"; "IS"; "NULL"; "TRUE"; "FALSE"; "USING"; "EXTRACTOR"; "WRITER"; "INTO"
     ]
     
     let str_ws s = pstring s .>> spaces
@@ -219,7 +220,7 @@ module Parser =
         let opp = new OperatorPrecedenceParser<Ast.TermEx, unit, unit>()
         let expr = opp.ExpressionParser
         let term =
-            spaces >>. ((between_str "("  ")" expr) <|> (between_str "("  ")" sqlParser) <|> sqlParser) .>> spaces
+            spaces >>. ((between_str "("  ")" expr) <|> (between_str "("  ")" sqlParser) <|> sqlParser <|> expr) .>> spaces
             
         opp.TermParser <- term
 
@@ -235,17 +236,17 @@ module Parser =
     
         opp.AddOperator(InfixOperator("IS", notFollowedBy letter >>. spaces, 2, Assoc.None, (fun x y -> BinEx(BinOp.Eq, x, y))))  
         opp.AddOperator(InfixOperator("=", spaces, 1, Assoc.None, (fun x y -> BinEx(BinOp.Eq, x, y))))
+        opp.AddOperator(InfixOperator("<>", spaces, 1, Assoc.None, (fun x y -> BinEx(BinOp.NEq, x, y))))
         opp.AddOperator(InfixOperator("<", spaces, 1, Assoc.None, (fun x y -> BinEx(BinOp.Lt, x, y))))
         opp.AddOperator(InfixOperator(">", spaces, 1, Assoc.None, (fun x y -> BinEx(BinOp.Gt, x, y))))
         opp.AddOperator(InfixOperator("<=", spaces, 1, Assoc.None, (fun x y -> BinEx(BinOp.Lte, x, y))))
         opp.AddOperator(InfixOperator(">=", spaces, 1, Assoc.None, (fun x y -> BinEx(BinOp.Gte, x, y))))
 
-        opp.AddOperator(InfixOperator("AND", notFollowedBy letter >>. spaces, 1, Assoc.Left, (fun x y -> And(x,y))))
-        opp.AddOperator(InfixOperator("OR", notFollowedBy letter >>. spaces, 1, Assoc.Left, (fun x y -> Or(x,y))))
+        opp.AddOperator(InfixOperator("AND", notFollowedBy letter >>. spaces, 2, Assoc.None, (fun x y -> And(x,y))))
+        opp.AddOperator(InfixOperator("OR", notFollowedBy letter >>. spaces, 2, Assoc.None, (fun x y -> Or(x,y))))
 
-        between_str "(" ")" expr
-        <|>
-        expr
+        
+        expr <|> between_str "(" ")" expr
 
     
     let aliasedTermEx =
@@ -296,7 +297,7 @@ module Parser =
             let parser = quotedStr .>>. extractor
             parser |>> OriginEx.DataSource
         let origin =
-            choice [ fileSource; resultSet ]
+            choice [ fileSource; resultSet;  (alias |>> OriginEx.ResultSet) ]
         origin
 
     let destination =
@@ -306,9 +307,8 @@ module Parser =
             let extractor = keyword "USING" >>. keyword "WRITER" >>. identifier |>> fun id -> WriterEx.Writer(id)
             let parser = quotedStr .>>. extractor
             parser |>> DestinationEx.Folder
-        let origin =
-            choice [ fileSource; resultSet ]
-        origin
+        fileSource <|> resultSet <|> (alias |>> (fun a -> DestinationEx.Folder(a, WriterEx.NoWriter)))
+    
 
     let destinationEx =
         keyword "INTO" >>.
@@ -403,3 +403,20 @@ module Parser =
         match run sqlParser (str.Trim()) with
         | Success(r,_,_) -> r
         | Failure(msg, err,_) -> failwithf "Failed to parse %s'" msg
+
+    let termParser (str:string) = 
+        match run termEx (str.Trim()) with
+        | Success(r,_,_) -> r
+        | Failure(msg, err,_) -> failwithf "Failed to parse %s'" msg
+
+
+Parser.termParser "(ORIGIN = 'MIA') AND (ARR_DELAY <> '')"
+let sql = """
+    SELECT TOP 10 * FROM 'test/flightdata.csv' USING EXTRACTOR CSV WHERE ORIGIN = 'MIA' INTO 'test/output/mia' USING WRITER JSONL
+"""
+
+let sql1 = """
+SELECT TOP 100 * FROM 'test/flightdata.csv' USING EXTRACTOR CSV WHERE (ORIGIN = 'MIA') AND (ARR_DELAY <> '') INTO #delayedflights
+"""
+
+Parser.parse sql1;
