@@ -419,4 +419,4 @@ let sql1 = """
 SELECT TOP 100 * FROM 'test/flightdata.csv' USING EXTRACTOR CSV WHERE (ORIGIN = 'MIA') AND (ARR_DELAY <> '') INTO #delayedflights
 """
 
-Parser.parse sql1;
+Parser.parse sql;
