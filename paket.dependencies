@@ -8,9 +8,4 @@ nuget MBrace.Core
 nuget MBrace.Flow
 nuget MBrace.Runtime
 nuget CsvHelper
-
-group Testing
-framework: net45
-source https://nuget.org/api/v2
-
 nuget MBrace.Azure
