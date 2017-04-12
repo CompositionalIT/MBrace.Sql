@@ -10,7 +10,7 @@ module Ast =
     module Str = String
 
     type BinOp =
-        | Gt | Lt | Gte | Lte | Eq | NEq
+        | Gt | Lt | Gte | Lte | Eq
         | Add | Mul | Div | Sub | Mod
 
         type UnOp =
@@ -102,7 +102,6 @@ module Ast =
 
     and WriterEx =
         | Writer of string
-        | NoWriter
 
     and OriginEx =
         | ResultSet of string
@@ -236,7 +235,6 @@ module Parser =
     
         opp.AddOperator(InfixOperator("IS", notFollowedBy letter >>. spaces, 2, Assoc.None, (fun x y -> BinEx(BinOp.Eq, x, y))))  
         opp.AddOperator(InfixOperator("=", spaces, 1, Assoc.None, (fun x y -> BinEx(BinOp.Eq, x, y))))
-        opp.AddOperator(InfixOperator("<>", spaces, 1, Assoc.None, (fun x y -> BinEx(BinOp.NEq, x, y))))
         opp.AddOperator(InfixOperator("<", spaces, 1, Assoc.None, (fun x y -> BinEx(BinOp.Lt, x, y))))
         opp.AddOperator(InfixOperator(">", spaces, 1, Assoc.None, (fun x y -> BinEx(BinOp.Gt, x, y))))
         opp.AddOperator(InfixOperator("<=", spaces, 1, Assoc.None, (fun x y -> BinEx(BinOp.Lte, x, y))))
@@ -297,9 +295,7 @@ module Parser =
             let extractor = keyword "USING" >>. keyword "EXTRACTOR" >>. identifier |>> fun id -> ExtractorEx.Extractor(id)
             let parser = quotedStr .>>. extractor
             parser |>> OriginEx.DataSource
-        let origin =
-            choice [ fileSource; resultSet;  (alias |>> OriginEx.ResultSet) ]
-        origin
+        choice [ fileSource; resultSet;  (alias |>> OriginEx.ResultSet) ]
 
     let destination =
         let resultSet =
@@ -308,7 +304,7 @@ module Parser =
             let extractor = keyword "USING" >>. keyword "WRITER" >>. identifier |>> fun id -> WriterEx.Writer(id)
             let parser = quotedStr .>>. extractor
             parser |>> DestinationEx.Folder
-        fileSource <|> resultSet <|> (alias |>> (fun a -> DestinationEx.Folder(a, WriterEx.NoWriter)))
+        fileSource <|> resultSet
     
 
     let destinationEx =
@@ -403,20 +399,3 @@ module Parser =
         match run sqlParser (str.Trim()) with
         | Success(r,_,_) -> r
         | Failure(msg, err,_) -> failwithf "Failed to parse %s'" msg
-
-    let termParser (str:string) = 
-        match run termEx (str.Trim()) with
-        | Success(r,_,_) -> r
-        | Failure(msg, err,_) -> failwithf "Failed to parse %s'" msg
-
-
-Parser.termParser "(ORIGIN = 'MIA') AND (ARR_DELAY <> '')"
-let sql = """
-    SELECT TOP 10 * FROM 'test/flightdata.csv' USING EXTRACTOR CSV WHERE ORIGIN = 'MIA' INTO 'test/output/mia' USING WRITER JSONL
-"""
-
-let sql1 = """
-SELECT TOP 100 * FROM 'test/flightdata.csv' USING EXTRACTOR CSV WHERE (ORIGIN = 'MIA') AND (ARR_DELAY <> '') INTO #delayedflights
-"""
-
-Parser.parse sql;
