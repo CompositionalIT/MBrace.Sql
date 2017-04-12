@@ -15,24 +15,61 @@ module Transpiler =
     open SqlParser.Ast
     open MBrace.Flow
     open MBrace.Core
+    open MBrace.Core.Internals
     open StandardLibrary.StdLib.Extractors
+    open StandardLibrary.StdLib.Writers
     open System.Text.RegularExpressions
     open System
     open StandardLibrary
     open StandardLibrary.StdLib
+    open System.Threading
+    open System.IO
+    let private cloudFlowStaticId = mkUUID ()
 
-    let private buildDestination (destinationEx:DestinationEx) (cf:CloudFlow<Map<string, SqlType>>) =
+    type QueryOutput =
+        | Files of CloudFileInfo []
+        | Memory
+        | Array of Map<string, SqlType> []
+
+    let toCloudFilesWithWriter (fileStore:ICloudFileStore) (dirPath:string) (retrieveWriter:Stream -> IWriter) (flow:CloudFlow<Map<string, SqlType>>) =
+        let collectorF (cloudCt:ICloudCancellationToken) =
+            local {
+                let cts = CancellationTokenSource.CreateLinkedTokenSource(cloudCt.LocalToken)
+                let results = ResizeArray<string * IWriter>()
+                fileStore.CreateDirectory(dirPath) |> Async.RunSync
+                return {
+                    new Collector<Map<string, SqlType>, CloudFileInfo []> with
+                        member self.DegreeOfParallelism = flow.DegreeOfParallelism
+                        member self.Iterator () =
+                            let path = fileStore.Combine(dirPath, sprintf "Part-%s-%s" cloudFlowStaticId (mkUUID ()))
+                            let writer = fileStore.BeginWrite(path) |> Async.RunSync |> retrieveWriter
+                            results.Add((path, writer))
+                            {   Func = (fun row -> writer.WriteRecord row);
+                                Cts = cts }
+                        member self.Result =
+                            results |> Seq.iter (fun (_, writer) -> writer.Dispose())
+                            results |> Seq.map (fun (path, _) -> CloudFileInfo(fileStore, path)) |> Seq.toArray }
+            }
+        cloud {
+            let! ct = Cloud.CancellationToken
+            use! cts = Cloud.CreateCancellationTokenSource(ct)
+            return! flow.WithEvaluators (collectorF cts.Token) (fun cloudFiles -> local { return cloudFiles }) (fun result -> local { return Array.concat result })
+        }
+
+    let private buildDestination cloudFileStore (destinationEx:DestinationEx) (cf:CloudFlow<Map<string, SqlType>>) =
         match destinationEx with
         | ResultSet name ->
             cloud {
                 let! pcf = cf |> CloudFlow.persist StorageLevel.Disk
                 let! d = CloudDictionary.GetById<PersistedCloudFlow<Map<string, SqlType>>>("MBraceSqlResults")
                 do! d.AddOrUpdateAsync(name, fun i -> pcf) |> Async.Ignore |> Cloud.OfAsync
-            } :> Cloud<_>
-        | Folder(string, writer) ->
+                return Memory
+            }
+        | Folder(folderName, Writer(writerName)) ->
             cloud {
-                //TODO: This needs to take in the writer that's provided and output the partitions of the dataset into the folder specified
-                return ()
+                let retrieveWriter = StdLib.Writers.RetrieveWriterByName writerName Map.empty
+                let! files = toCloudFilesWithWriter cloudFileStore folderName retrieveWriter cf
+                return Files files
             }
 
     let private buildOriginQuery (From(origin, alias)) =
@@ -78,7 +115,7 @@ module Transpiler =
         let applyProjectionToRow (projections:ProjectionEx list) (row:Map<string, SqlType>) =
             projections
             |> List.fold (fun s t ->
-                let (Projection(term, alias)) = t //I honestly can't remember why I did this, I think it's because a table or column reference can be computed in SQL e.g. SELECT * FROM ("Table" + "A")
+                let (Projection(term, alias)) = t//I honestly can't remember why I did this, I think it's because a table or column reference can be computed in SQL e.g. SELECT * FROM ("Table" + "A"). Never mind, there's three types of projections and we already deal with 2 of them before this.
                 match term with
                 | Ref components ->
                     let str = components |> String.concat "."
@@ -107,12 +144,14 @@ module Transpiler =
             cloudFlow
             |> CloudFlow.map (applyProjectionToRow projections)
 
-    type QueryOutput =
-        | Files
-        | Memory
-        | Array of Map<string, SqlType> []
+    let buildOrder (flow:CloudFlow<Map<string, SqlType>>) (sort:OrderEx list) =
+        let projections, sorter =
+            sort
+            |> List.map (fun (Order (column, direction)) -> column, match direction with Some(ASC) | None -> (<) | Some(DESC) -> (>))
+            |> List.unzip
+        CloudFlow.sortByUsing 
 
-    let TranspileSqlAstToCloudFlow (sqlAst:Query) =
+    let TranspileSqlAstToCloudFlow cloudFileStore (sqlAst:Query) =
         let defaultArg t opt = defaultArg opt t
         cloud {
             let! origin = buildOriginQuery sqlAst.From
@@ -126,10 +165,12 @@ module Transpiler =
                 let projected =
                     buildProjections filtered sqlAst.Projection
 
+                // let sorted =
+                //     buildOrder projected sqlAst.Order
+
                 match sqlAst.Destination with
                 | Some dest ->
-                    let! res = buildDestination dest projected
-                    return Files
+                    return! buildDestination cloudFileStore dest projected
                 | None ->
                     let! res = projected |> CloudFlow.toArray
                     return Array res
@@ -140,27 +181,30 @@ module Transpiler =
                 return invalidOp "No file or directory was found matching the supplied path"
         }
 
-// open Transpiler
+open Transpiler
 
-// [<AutoOpen>]
-// module CloudClientExtensions =
-//     open MBrace.Core
-//     open MBrace.Core.Internals
-//     open MBrace.Runtime
-//     open Transpiler
-//     open SqlParser.Parser
-//     open SqlParser.Ast
+[<AutoOpen>]
+module CloudClientExtensions =
+    open MBrace.Core
+    open MBrace.Core.Internals
+    open MBrace.Runtime
+    open Transpiler
+    open SqlParser.Parser
+    open SqlParser.Ast
 
-//     type MBrace.Runtime.MBraceClient with
-//         member this.ExecuteSql(sql:string) =
-//             let res = parse sql
-//             let cluster = this.GetResource<ICloudFileStore>()
-//             let clo =
-//                 match res with
-//                 | QueryEx q -> TranspileSqlAstToCloudFlow q
-//                 //TODO: Some of the other SQL types we'll have in here are DROP and CREATE TABLE etc
-//                 //TODO: The output also needs changing to reflect whether we're returning a vector, scalar or non query
-//                 | _ -> failwith "Unsupported query type used"
-//             this.Run(clo)
+    let convertSqlToCloudFlow fileStore sql =
+        let res = parse sql
+        match res with
+        | QueryEx q -> TranspileSqlAstToCloudFlow fileStore q
+        | _ -> failwith "Unsupported query type"
 
+    type MBrace.Runtime.MBraceClient with
+        member this.ExecuteSql(sql:string) =
+            let fileStore = this.GetResource<ICloudFileStore>()
+            convertSqlToCloudFlow fileStore sql
+            |> this.Run
 
+        member this.ExecuteSqlAsync(sql:string) =
+            let fileStore = this.GetResource<ICloudFileStore>()
+            convertSqlToCloudFlow fileStore sql
+            |> this.RunAsync
