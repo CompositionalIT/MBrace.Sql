@@ -135,6 +135,7 @@ module StdLib =
         | Ref(elements) ->
             let elementName = elements |> Str.concat "."
             currentRow.[elementName]
+        | Call("CAST", [Cast (term, typ)])
         | Cast(term, typ) ->
             let term = evaluateTerm term
             match typ.ToUpper() with
@@ -147,9 +148,12 @@ module StdLib =
                 |> System.Convert.ToInt32
                 |> SqlType.Integer
             | "FLOAT" ->
-                term.InnerValue
-                |> System.Convert.ToDouble
-                |> SqlType.Float
+                try
+                    term.InnerValue
+                    |> System.Convert.ToDouble
+                    |> SqlType.Float
+                with
+                | exn -> invalidOp <| sprintf "Unable to cast string %A to float" term.InnerValue
             | "VARCHAR" ->
                 term.InnerValue
                 |> string
@@ -261,36 +265,76 @@ module StdLib =
         open MBrace.Core
         open System.Threading
         open System.Collections.Generic
-        // open Sql.Ast
-
-        // let toCloudFilesWithSerializer (dirPath:string) serializer (flow:CloudFlow<Map<string, SqlType>>) =
-        //     let collectorf (cloudCt : ICloudCancellationToken) =
-        //         local {
-        //             let cts = CancellationTokenSource.CreateLinkedTokenSource(cloudCt.LocalToken)
-        //             let results = new List<string * StreamWriter>()
-        //             let! _ = CloudDirectory.Create dirPath
-        //             return
-        //                 { new Collector<string, CloudFileInfo []> with
-        //                     member self.DegreeOfParallelism = flow.DegreeOfParallelism
-        //                     member self.Iterator() =
-        //                         let path = CloudStore.Combine(dirPath, sprintf "Part-%s-%s.txt" cloudFlowStaticId (mkUUID ()))
-        //                         let stream = store.BeginWrite(path) |> Async.RunSync
-        //                         let writer = new StreamWriter(stream)
-        //                         results.Add((path, writer))
-        //                         {   Func = (fun line -> writer.WriteLine(line));
-        //                             Cts = cts }
-        //                     member self.Result =
-        //                         results |> Seq.iter (fun (_, writer) -> writer.Dispose())
-        //                         results |> Seq.map (fun (path, _) -> new CloudFileInfo(store, path)) |> Seq.toArray }
-        //         }
-        //     cloud {
-        //         let! ct = Cloud.CancellationToken
-        //         use! cts = Cloud.CreateCancellationTokenSource(ct)
-        //         return! flow.WithEvaluators (collectorf cts.Token) (fun cloudFiles -> local { return cloudFiles }) (fun result -> local { return Array.concat result })
-        //     }
 
         type IWriter = 
-            abstract Write : Stream -> seq<Map<string, SqlType>> -> unit
+            inherit IDisposable
+            abstract WriteRecord : Map<string, SqlType> -> unit
+            abstract FileExtension : string with get
+
+        type CsvWriter(options:Map<string, string>, stream:Stream) =
+            let streamWriter = new StreamWriter(stream)
+            let csvHelper = new CsvHelper.CsvWriter(streamWriter)
+
+            interface IWriter with
+                member this.Dispose () =
+                    (streamWriter :> IDisposable).Dispose()
+                member this.FileExtension = "csv"
+                member this.WriteRecord fields =
+                    let o = System.Dynamic.ExpandoObject()
+                    let p = o :> IDictionary<string, obj>
+                    fields
+                    |> Map.iter (fun k v -> p.Add(k, v))
+                    ()
+
+        open Newtonsoft.Json
+        open Newtonsoft.Json.Linq
+
+        type JsonLWriter(options:Map<string, string>, stream:Stream) =
+            let streamWriter = new StreamWriter(stream)
+
+            let sqlTypeToJObj sqlType =
+                match sqlType with
+                | SqlType.Null -> JValue.CreateNull()
+                | SqlType.Binary bytes -> JValue(bytes)
+                | SqlType.Bool b -> JValue b
+                | SqlType.Char c -> JValue c
+                | SqlType.DateTime dt -> JValue dt
+                | SqlType.Float f -> JValue f
+                | SqlType.Integer i -> JValue i
+                | SqlType.Money m -> JValue m
+                | SqlType.String s -> JValue s
+
+            let rec recursivelyTryAddToJObject value (json:JObject) path =
+                match path with
+                | [x] -> json.Add(x, sqlTypeToJObj value)
+                | x::xs ->
+                    match json.TryGetValue(x) with
+                    | true, v -> 
+                        let jo = v :?> JObject
+                        recursivelyTryAddToJObject value jo xs
+                    | false, _ ->
+                        let nestedObject = JObject()
+                        recursivelyTryAddToJObject value nestedObject xs
+                        json.Add(x, nestedObject)
+                | _ -> invalidOp "It's all gone Pete Tong in the JSON writer"
+
+            interface IWriter with
+                member this.Dispose() =
+                    (streamWriter :> IDisposable).Dispose()
+                member this.FileExtension = "jsonl"
+                member this.WriteRecord fields =
+                    let jobj = Newtonsoft.Json.Linq.JObject()
+                    fields
+                    |> Seq.iter (fun (KeyValue(key, value)) ->
+                        let path = key.Split('.') |> List.ofArray
+                        recursivelyTryAddToJObject value jobj path)
+                    streamWriter.WriteLine(jobj.ToString(Newtonsoft.Json.Formatting.None))
+
+        let RetrieveWriterByName (name:string) options stream : IWriter = 
+            match name.ToLower() with
+            | "csv" -> new CsvWriter(options, stream) :> _
+            | "jsonl" -> new JsonLWriter(options, stream) :> _
+            | _ -> invalidArg "name" "No writer matching that name"
 
     module Functions =
         let Len str =
