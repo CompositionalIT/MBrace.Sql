@@ -73,10 +73,33 @@ module StdLib =
 
     let private truth = SqlType.Bool true
 
+    let rec shrinkAst (term:TermEx) : TermEx =
+        match term with
+        | BinEx(BinOp.Eq, TermEx.Value v1, TermEx.Value v2) ->
+            TermEx.Value(ValueEx.Bool(v1 = v2))
+        | BinEx(BinOp.Lt, TermEx.Value v1, TermEx.Value v2) ->
+            TermEx.Value(ValueEx.Bool(v1 < v2))
+        | BinEx(BinOp.Lte, TermEx.Value v1, TermEx.Value v2) ->
+            TermEx.Value(ValueEx.Bool(v1 <= v2))
+        | BinEx(BinOp.Add, TermEx.Value v1, TermEx.Value v2) ->
+            TermEx.Value(v1 + v2)
+        | BinEx(BinOp.Div, TermEx.Value v1, TermEx.Value v2) ->
+            TermEx.Value(v1 / v2)
+        | BinEx(BinOp.Gt, TermEx.Value v1, TermEx.Value v2) ->
+            TermEx.Value(ValueEx.Bool(v1 > v2))
+        | BinEx(BinOp.Gte, TermEx.Value v1, TermEx.Value v2) ->
+            TermEx.Value(ValueEx.Bool(v1 <= v2))
+        | BinEx(BinOp.Mul, TermEx.Value v1, TermEx.Value v2) ->
+            TermEx.Value(v1 * v2)
+        | BinEx(BinOp.Mod, TermEx.Value v1, TermEx.Value v2) ->
+            TermEx.Value(v1 % v2)
+        | _ -> term
+
     let rec evaluateTerm (currentRow:Map<string, SqlType>) (term:TermEx) : SqlType =
         //TODO: This is actually really computationally expensive and could be sped up a lot
         //It's a hard solution but dynamic method generation would be a good fit here
         //Supply a TermEx, collapse it and generate an IL version of the method
+        let term = shrinkAst term
         let evaluateTerm = evaluateTerm currentRow
         match term with
         | BinEx(BinOp.Eq, left, UnEx(Like, right)) ->
