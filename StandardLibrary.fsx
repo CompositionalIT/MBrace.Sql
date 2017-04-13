@@ -94,6 +94,56 @@ module StdLib =
         | BinEx(BinOp.Mod, TermEx.Value v1, TermEx.Value v2) ->
             TermEx.Value(v1 % v2)
         | _ -> term
+    
+    let mapType = typeof<Map<string, SqlType>>
+    let mapGetter = mapType.GetProperty("Item")
+
+    let compileSqlAst (term:TermEx) =
+        let functionParameter = Quotations.Var("currentRow", typeof<Map<string, SqlType>>)
+        let rec convertAstToQuotation (term:TermEx) =
+            match term with
+            | TermEx.Value v ->
+                match v with
+                | ValueEx.Bool b -> <@@ SqlType.Bool b @@>
+                | ValueEx.Float f -> <@@ SqlType.Float f @@>
+                | ValueEx.Integer i -> <@@ SqlType.Integer i @@>
+                | ValueEx.Null -> <@@ SqlType.Null @@>
+                | ValueEx.String s -> <@@ SqlType.String s @@>
+            | BinEx(op, left, right) ->
+                let left = convertAstToQuotation left
+                let right = convertAstToQuotation right
+                match op with
+                | BinOp.Add -> <@@ (%%left : SqlType) + (%%right : SqlType) @@>
+                | BinOp.Div -> <@@ %%left / %%right @@>
+                | BinOp.Eq -> <@@ %%left = %%right @@>
+                | BinOp.Gt -> <@@ %%left > %%right @@>
+                | BinOp.Gte -> <@@ %%left >= %%right @@>
+                | BinOp.Lt -> <@@ %%left < %%right @@>
+                | BinOp.Lte -> <@@ %%left <= %%right @@>
+                | BinOp.Mod -> <@@ %%left % %%right @@>
+                | BinOp.Mul -> <@@ %%left * %%right @@>
+                | BinOp.Sub -> <@@ %%left - %%right @@>
+            | TermEx.And(left, right) ->
+                let left = convertAstToQuotation left
+                let right = convertAstToQuotation right
+                <@@ %%left && %%right @@>
+            | TermEx.Not(term) ->
+                let expr = convertAstToQuotation term
+                <@@ not %%expr @@>
+            | TermEx.Or(left, right) ->
+                let left = convertAstToQuotation left
+                let right = convertAstToQuotation right
+                <@@ %%left || %%right @@>
+            | TermEx.Ref(components) ->
+                let elementName = components |> Str.concat "."
+                Quotations.Expr.PropertyGet(Quotations.Expr.Var functionParameter, mapGetter, [Quotations.Expr.Value elementName])
+        
+        let lambdaBody = convertAstToQuotation term
+        Quotations.Expr.Lambda(functionParameter, lambdaBody)
+        
+        
+
+    let ast = Ref(["Test"])
 
     let rec evaluateTerm (currentRow:Map<string, SqlType>) (term:TermEx) : SqlType =
         //TODO: This is actually really computationally expensive and could be sped up a lot
