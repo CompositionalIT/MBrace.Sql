@@ -71,6 +71,21 @@ module StdLib =
             | Integer i1, Integer i2 -> Integer(i1 % i2)
             | _ -> sprintf "Unable to perform op (%%) on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
 
+        static member op_BooleanAnd (left, right) =
+            match left, right with
+            | Bool b1, Bool b2 -> SqlType.Bool(b1 && b2)
+            | _ -> sprintf "Unable to perform op (&&) on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
+
+        static member op_BooleanOr (left, right) =
+            match left, right with
+            | Bool b1, Bool b2 -> Bool(b1 || b2)
+            | _ -> sprintf "Unable to perform op (||) on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
+
+        static member op_BooleanNot left =
+            match left with
+            | Bool b -> Bool(not b)
+            | _ -> sprintf "Unable to perform op (not) on type %A" (left.GetType()) |> invalidOp
+
     let private truth = SqlType.Bool true
 
     let rec shrinkAst (term:TermEx) : TermEx =
@@ -100,49 +115,115 @@ module StdLib =
 
     let compileSqlAst (term:TermEx) =
         let functionParameter = Quotations.Var("currentRow", typeof<Map<string, SqlType>>)
-        let rec convertAstToQuotation (term:TermEx) =
+        let rec convertAstToQuotation (term:TermEx) : Quotations.Expr<SqlType> =
             match term with
             | TermEx.Value v ->
                 match v with
-                | ValueEx.Bool b -> <@@ SqlType.Bool b @@>
-                | ValueEx.Float f -> <@@ SqlType.Float f @@>
-                | ValueEx.Integer i -> <@@ SqlType.Integer i @@>
-                | ValueEx.Null -> <@@ SqlType.Null @@>
-                | ValueEx.String s -> <@@ SqlType.String s @@>
+                | ValueEx.Bool b -> <@ SqlType.Bool b @>
+                | ValueEx.Float f -> <@ SqlType.Float f @>
+                | ValueEx.Integer i -> <@ SqlType.Integer i @>
+                | ValueEx.Null -> <@ SqlType.Null @>
+                | ValueEx.String s -> <@ SqlType.String s @>
+            | BinEx(BinOp.Eq, left, UnEx(UnOp.Like, right)) ->
+                <@
+                    let left = %convertAstToQuotation left
+                    let right = %convertAstToQuotation right
+                    match left, right with
+                    | SqlType.String field, SqlType.String pattern ->
+                        let regex = System.Text.RegularExpressions.Regex(pattern)
+                        field
+                        |> regex.IsMatch
+                        |> SqlType.Bool
+                    | _ -> sprintf "Unable to perform regex match on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
+                @>
+            | BinEx(BinOp.Eq, left, Not(Value(ValueEx.Null))) ->
+                <@
+                    let left = %convertAstToQuotation left
+                    match left with
+                    | SqlType.Null -> SqlType.Bool false
+                    | _ -> SqlType.Bool true
+                @>
+            | BinEx(BinOp.Eq, left, Value(ValueEx.Null)) ->
+                <@
+                    let left = %convertAstToQuotation left
+                    match left with
+                    | SqlType.Null -> SqlType.Bool true
+                    | _ -> SqlType.Bool false
+                @>
             | BinEx(op, left, right) ->
                 let left = convertAstToQuotation left
                 let right = convertAstToQuotation right
                 match op with
-                | BinOp.Add -> <@@ (%%left : SqlType) + (%%right : SqlType) @@>
-                | BinOp.Div -> <@@ %%left / %%right @@>
-                | BinOp.Eq -> <@@ %%left = %%right @@>
-                | BinOp.Gt -> <@@ %%left > %%right @@>
-                | BinOp.Gte -> <@@ %%left >= %%right @@>
-                | BinOp.Lt -> <@@ %%left < %%right @@>
-                | BinOp.Lte -> <@@ %%left <= %%right @@>
-                | BinOp.Mod -> <@@ %%left % %%right @@>
-                | BinOp.Mul -> <@@ %%left * %%right @@>
-                | BinOp.Sub -> <@@ %%left - %%right @@>
+                | BinOp.Add -> <@ %left + %right @>
+                | BinOp.Div -> <@ %left / %right @>
+                | BinOp.Eq -> <@ SqlType.Bool(%left = %right) @>
+                | BinOp.Gt -> <@ SqlType.Bool(%left > %right) @>
+                | BinOp.Gte -> <@ SqlType.Bool(%left >= %right) @>
+                | BinOp.Lt -> <@ SqlType.Bool(%left < %right) @>
+                | BinOp.Lte -> <@ SqlType.Bool(%left <= %right) @>
+                | BinOp.Mod -> <@ %left % %right @>
+                | BinOp.Mul -> <@ %left * %right @>
+                | BinOp.Sub -> <@ %left - %right @>
             | TermEx.And(left, right) ->
-                let left = convertAstToQuotation left
-                let right = convertAstToQuotation right
-                <@@ %%left && %%right @@>
+                <@
+                    let left = %convertAstToQuotation left
+                    let right = %convertAstToQuotation right
+                    match left, right with
+                    | SqlType.Bool b1, SqlType.Bool b2 -> SqlType.Bool(b1 && b2)
+                    | _ -> sprintf "Unable to perform op (&&) on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
+                @>
             | TermEx.Not(term) ->
-                let expr = convertAstToQuotation term
-                <@@ not %%expr @@>
+                <@ 
+                    let expr = %convertAstToQuotation term
+                    match expr with
+                    | SqlType.Bool b -> SqlType.Bool (not b)
+                    | _ -> sprintf "Unable to perform op (not) on type %A" (expr.GetType()) |> invalidOp
+                @>
             | TermEx.Or(left, right) ->
-                let left = convertAstToQuotation left
-                let right = convertAstToQuotation right
-                <@@ %%left || %%right @@>
+                <@
+                    let left = %convertAstToQuotation left
+                    let right = %convertAstToQuotation right
+                    match left, right with
+                    | SqlType.Bool b1, SqlType.Bool b2 -> SqlType.Bool(b1 || b2)
+                    | _ -> sprintf "Unable to perform op (||) on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
+                @>
             | TermEx.Ref(components) ->
                 let elementName = components |> Str.concat "."
                 Quotations.Expr.PropertyGet(Quotations.Expr.Var functionParameter, mapGetter, [Quotations.Expr.Value elementName])
-        
+                |> Quotations.Expr.Cast<SqlType>
+            | TermEx.UnEx(UnOp.Neg, term) ->
+                <@ 
+                    let term = %convertAstToQuotation term
+                    -term 
+                @>
+            | Call("CAST", [Cast (term, typ)])
+            | Cast(term, typ) ->
+                <@
+                    let term = %convertAstToQuotation term
+                    match typ.ToUpper() with
+                    | "BOOL" -> 
+                        term.InnerValue
+                        |> System.Convert.ToBoolean
+                        |> SqlType.Bool
+                    | "INT" ->
+                        term.InnerValue
+                        |> System.Convert.ToInt32
+                        |> SqlType.Integer
+                    | "FLOAT" ->
+                        term.InnerValue
+                        |> System.Convert.ToDouble
+                        |> SqlType.Float
+                    | "VARCHAR" ->
+                        term.InnerValue
+                        |> string
+                        |> SqlType.String
+                    //TODO: Implement any other SQL types which might be needed here
+                    | _ -> term
+                @>
+
         let lambdaBody = convertAstToQuotation term
         Quotations.Expr.Lambda(functionParameter, lambdaBody)
         
-        
-
     let ast = Ref(["Test"])
 
     let rec evaluateTerm (currentRow:Map<string, SqlType>) (term:TermEx) : SqlType =
