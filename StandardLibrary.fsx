@@ -71,21 +71,6 @@ module StdLib =
             | Integer i1, Integer i2 -> Integer(i1 % i2)
             | _ -> sprintf "Unable to perform op (%%) on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
 
-        static member op_BooleanAnd (left, right) =
-            match left, right with
-            | Bool b1, Bool b2 -> SqlType.Bool(b1 && b2)
-            | _ -> sprintf "Unable to perform op (&&) on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
-
-        static member op_BooleanOr (left, right) =
-            match left, right with
-            | Bool b1, Bool b2 -> Bool(b1 || b2)
-            | _ -> sprintf "Unable to perform op (||) on types %A and %A" (left.GetType()) (right.GetType()) |> invalidOp
-
-        static member op_BooleanNot left =
-            match left with
-            | Bool b -> Bool(not b)
-            | _ -> sprintf "Unable to perform op (not) on type %A" (left.GetType()) |> invalidOp
-
     let private truth = SqlType.Bool true
 
     let rec shrinkAst (term:TermEx) : TermEx =
@@ -108,6 +93,12 @@ module StdLib =
             TermEx.Value(v1 * v2)
         | BinEx(BinOp.Mod, TermEx.Value v1, TermEx.Value v2) ->
             TermEx.Value(v1 % v2)
+        | And(TermEx.Value(ValueEx.Bool b1), TermEx.Value(ValueEx.Bool b2)) ->
+            TermEx.Value(ValueEx.Bool(b1 && b2))
+        | Or(TermEx.Value(ValueEx.Bool b1), TermEx.Value(ValueEx.Bool b2)) ->
+            TermEx.Value(ValueEx.Bool(b1 || b2))
+        | Not(TermEx.Value(ValueEx.Bool b)) ->
+            TermEx.Value(ValueEx.Bool (not b))
         | _ -> term
     
     let mapType = typeof<Map<string, SqlType>>
@@ -189,8 +180,7 @@ module StdLib =
                 @>
             | TermEx.Ref(components) ->
                 let elementName = components |> Str.concat "."
-                Quotations.Expr.PropertyGet(Quotations.Expr.Var functionParameter, mapGetter, [Quotations.Expr.Value elementName])
-                |> Quotations.Expr.Cast<SqlType>
+                Quotations.Expr.Cast<SqlType>(Quotations.Expr.PropertyGet(Quotations.Expr.Var functionParameter, mapGetter, [Quotations.Expr.Value elementName]))
             | TermEx.UnEx(UnOp.Neg, term) ->
                 <@ 
                     let term = %convertAstToQuotation term
@@ -220,6 +210,27 @@ module StdLib =
                     //TODO: Implement any other SQL types which might be needed here
                     | _ -> term
                 @>
+            | TermEx.QueryEx _ ->
+                sprintf "Nested queries are not currently supported" |> invalidOp
+            | TermEx.Case(selector, branches, defaultValue) ->
+                let rec findFirstResult (branches:(Quotations.Expr<SqlType>*Quotations.Expr<SqlType>) list) (selector:Quotations.Expr<SqlType>) defaultValue =
+                    match branches with
+                    | (branch, result)::xs ->
+                        <@
+                            if %branch = %selector then
+                                %result
+                            else %findFirstResult xs selector defaultValue
+                        @>
+                    | [] -> defaultValue
+                let selector =
+                    match selector with
+                    | Some x -> convertAstToQuotation x
+                    | None -> <@ SqlType.Bool true @>
+                let defaultValue = convertAstToQuotation defaultValue
+                let branches =
+                    branches
+                    |> List.map (fun (a,b) -> convertAstToQuotation a, convertAstToQuotation b)
+                findFirstResult branches selector defaultValue
 
         let lambdaBody = convertAstToQuotation term
         Quotations.Expr.Lambda(functionParameter, lambdaBody)
