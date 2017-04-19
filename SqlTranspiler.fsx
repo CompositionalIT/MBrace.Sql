@@ -105,6 +105,9 @@ module Transpiler =
                     return None
             }
 
+    let private buildJoinQuery (joins:JoinEx list) (primaryFlow:CloudFlow<Map<string, SqlType>>) =
+        ()
+
     let private buildFilterQuery (filter:TermEx) (cloudFlow:CloudFlow<Map<string, SqlType>>) =
         let truth = SqlType.Bool true
         cloudFlow
@@ -180,6 +183,17 @@ module Transpiler =
             | None ->
                 return invalidOp "No file or directory was found matching the supplied path"
         }
+
+(*
+    The order of operations which should happen within the transpilation is as follows
+        0. From - Build up origin datasets
+        1. Join - Ensures that the complete row is available for all subsequent queries
+        2. Group by - Allows verification of projections during subsequent stages and checks to see which function should be used e.g. CloudFlow.Sum or Seq.sum
+        3. Filter - If it's grouped then this is in the form of a HAVING expression, otherwise it's a regular where (Having requires changes to the Sql Parser
+        4. Order - Having filtered we can now order the results, we need to specify the max number to use here as well
+        5. Projections - The dataset should now be projected into the column names specified in the select query
+        6. Destination - Finally add the destination
+*)
 
 open Transpiler
 
