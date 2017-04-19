@@ -9,3 +9,5 @@ nuget MBrace.Flow
 nuget MBrace.Runtime
 nuget CsvHelper
 nuget MBrace.Azure
+nuget QuotationCompiler
+nuget Newtonsoft.Json

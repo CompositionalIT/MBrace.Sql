@@ -1,0 +1,7 @@
+﻿FParsec
+MBrace.Core
+MBrace.Flow
+MBrace.Runtime
+QuotationCompiler
+Newtonsoft.Json
+CsvHelper
