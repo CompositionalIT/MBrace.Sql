@@ -1,26 +1,15 @@
 ﻿namespace MBrace.Sql.Transpilation
 
-module Transpiler =
-    module Str = String
-
-    open MBrace.Sql.Parser.Ast
-    open MBrace.Flow
-    open MBrace.Core
+module CloudFlow =
     open MBrace.Core.Internals
-    open MBrace.Sql.StdLib
-    open MBrace.Sql.StdLib.Extractors
-    open MBrace.Sql.StdLib.Writers
-    open System.Text.RegularExpressions
-    open System
-    open System.Threading
+    open MBrace.Core
     open System.IO
-    
-    let private cloudFlowStaticId = mkUUID ()
+    open MBrace.Sql.StdLib.Writers
+    open MBrace.Flow
+    open System.Threading
+    open MBrace.Sql.StdLib
 
-    type QueryOutput =
-        | Files of CloudFileInfo []
-        | Memory
-        | Array of Map<string, SqlType> []
+    let private cloudFlowStaticId = mkUUID ()
 
     let toCloudFilesWithWriter (fileStore:ICloudFileStore) (dirPath:string) (retrieveWriter:Stream -> IWriter) (flow:CloudFlow<Map<string, SqlType>>) =
         let collectorF (cloudCt:ICloudCancellationToken) =
@@ -47,6 +36,21 @@ module Transpiler =
             return! flow.WithEvaluators (collectorF cts.Token) (fun cloudFiles -> local { return cloudFiles }) (fun result -> local { return Array.concat result })
         }
 
+module Transpiler =
+    open MBrace.Core
+    open MBrace.Flow
+    open MBrace.Sql.StdLib
+    open MBrace.Sql.Parser.Ast
+    open MBrace.Sql.StdLib.Writers
+    open MBrace.Sql.StdLib.Extractors
+
+    module Str = String
+
+    type QueryOutput =
+        | Files of CloudFileInfo []
+        | Memory
+        | Array of Map<string, SqlType> []
+
     let private buildDestination cloudFileStore (destinationEx:DestinationEx) (cf:CloudFlow<Map<string, SqlType>>) =
         match destinationEx with
         | ResultSet name ->
@@ -59,7 +63,7 @@ module Transpiler =
         | Folder(folderName, Writer(writerName)) ->
             cloud {
                 let retrieveWriter = RetrieveWriterByName writerName Map.empty
-                let! files = toCloudFilesWithWriter cloudFileStore folderName retrieveWriter cf
+                let! files = CloudFlow.toCloudFilesWithWriter cloudFileStore folderName retrieveWriter cf
                 return Files files
             }
 
@@ -67,7 +71,7 @@ module Transpiler =
         match origin with
         | OriginEx.ResultSet rsName ->
             local {
-                let! d = MBrace.Core.CloudDictionary.GetById<PersistedCloudFlow<Map<string, SqlType>>>("MBraceSqlResults")
+                let! d = CloudDictionary.GetById<PersistedCloudFlow<Map<string, SqlType>>>("MBraceSqlResults")
                 let! cf = d.TryFindAsync(rsName) |> Cloud.OfAsync
                 return cf |> Option.map (fun t -> t :> CloudFlow<_>)
             }
@@ -192,7 +196,7 @@ module CloudClientExtensions =
         | QueryEx q -> TranspileSqlAstToCloudFlow fileStore q
         | _ -> failwith "Unsupported query type"
 
-    type MBrace.Runtime.MBraceClient with
+    type MBraceClient with
         member this.ExecuteSql(sql:string) =
             let fileStore = this.GetResource<ICloudFileStore>()
             convertSqlToCloudFlow fileStore sql

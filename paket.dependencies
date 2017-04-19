@@ -11,3 +11,4 @@ nuget CsvHelper
 nuget MBrace.Azure
 nuget QuotationCompiler
 nuget Newtonsoft.Json
+nuget FSharp.Compiler.Service 1.3.1 redirects: on
